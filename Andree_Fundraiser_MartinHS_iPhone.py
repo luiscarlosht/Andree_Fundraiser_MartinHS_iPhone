@@ -2,12 +2,11 @@
 # -*- coding: utf-8 -*-
 
 import os, sys, csv, time, json, argparse
-import base64
 import requests
 from datetime import datetime
 
 # ----------------------- CONFIG VIA ENV -----------------------
-BB_BASE_URL   = os.getenv("BB_BASE_URL", "").rstrip("/")  # e.g. https://make-earned-ent-fu.trycloudflare.com
+BB_BASE_URL   = os.getenv("BB_BASE_URL", "").rstrip("/")  # e.g. https://xxxx.trycloudflare.com
 BB_USERNAME   = os.getenv("BB_USERNAME", "admin")         # whatever you set in BlueBubbles
 BB_PASSWORD   = os.getenv("BB_PASSWORD", "")              # your BlueBubbles server password
 
@@ -67,6 +66,21 @@ def load_rows(csv_path: str):
     with open(csv_path, newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
+def build_message(name: str, lang: str, text_override: str | None, image_url: str | None) -> str:
+    """
+    If text_override is provided, use it; otherwise pick EN/ES template.
+    If image_url is provided, append it on a new line (as a clickable link).
+    """
+    if text_override:
+        msg = text_override
+    else:
+        template = BODY_ES if lang == "ES" else BODY_EN
+        msg = template.format(name=name)
+    if image_url:
+        # Must be a direct URL (e.g., .jpg/.png). Google Photos share links won't work.
+        msg = f"{msg}\n{image_url}"
+    return msg
+
 def main():
     ap = argparse.ArgumentParser(description="Send messages via your iPhone/Mac using BlueBubbles")
     ap.add_argument("--to", help="Single E164 number to send to, e.g. +12142354360")
@@ -75,17 +89,22 @@ def main():
     ap.add_argument("--start-from", type=int, default=0, help="Start index in CSV (0-based)")
     ap.add_argument("--lang", choices=["EN","ES","AUTO"], default="AUTO", help="Force language; default AUTO")
     ap.add_argument("--dry-run", action="store_true", help="Print actions but do not send")
+
+    # NEW: per-send overrides
+    ap.add_argument("--text", help="Override message body for single sends and CSV rows (use {name} if you want personalization)")
+    ap.add_argument("--image-url", help="Optional direct image URL to append as a link. Must be a direct file URL (no Google Photos shares).")
+
     args = ap.parse_args()
 
     if not args.to and not args.csv:
         print("Provide --to +E164 or --csv path", file=sys.stderr)
         sys.exit(1)
 
-    # Single send
+    # Single send mode
     if args.to:
         name = "friend"
-        lang = "EN" if args.lang != "AUTO" else "EN"
-        body = (BODY_ES if lang=="ES" else BODY_EN).format(name=name)
+        lang = ("EN" if args.lang == "AUTO" else args.lang)
+        body = build_message(name=name, lang=lang, text_override=args.text, image_url=args.image_url)
         if args.dry_run:
             print(f"DRY-RUN to {args.to} :: {body}")
         else:
@@ -93,7 +112,7 @@ def main():
             print(f"Sent to {args.to} :: {json.dumps(resp)}")
         return
 
-    # CSV send
+    # CSV bulk mode
     rows = load_rows(args.csv)
     start = max(args.start_from, 0)
     end = len(rows) if args.limit is None else min(len(rows), start + args.limit)
@@ -109,7 +128,7 @@ def main():
 
         name = first_name(row)
         lang = detect_lang(row) if args.lang == "AUTO" else args.lang
-        body = (BODY_ES if lang=="ES" else BODY_EN).format(name=name)
+        body = build_message(name=name, lang=lang, text_override=args.text, image_url=args.image_url)
 
         try:
             if args.dry_run:
